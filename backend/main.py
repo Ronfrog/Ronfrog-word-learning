@@ -198,18 +198,23 @@ def generate_ai(req: GenerateRequest, uid: str = Depends(verify_firebase_token))
 # -----------------
 @app.get("/{catchall:path}")
 def serve_react_app(catchall: str):
-    # 判斷 dist 資料夾在本地開發還是 Docker 環境內的相對位置
-    dist_dir = "../dist" if os.path.exists("../dist") else "dist"
+    # 使用絕對路徑，確保無論從哪裡啟動 uvicorn 都不會迷路
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    dist_dir = os.path.join(BASE_DIR, "..", "dist")
     
-    # 如果是真正的靜態檔案 (例如 /assets/index.js)
+    # 本地開發防呆：如果上一層找不到，找找看同層有沒有 dist
+    if not os.path.exists(dist_dir):
+        dist_dir = os.path.join(BASE_DIR, "dist")
+        
+    # 如果是找真正的靜態檔案 (例如 /assets/index.js)
     if catchall:
         dist_path = os.path.join(dist_dir, catchall)
         if os.path.isfile(dist_path):
             return FileResponse(dist_path)
             
-    # 否則一律 fallback 到 React 的首頁 (Single Page Application 必備)
+    # 否則一律 fallback 到 React 首頁 (開啟首頁時 catchall 為空)
     index_path = os.path.join(dist_dir, "index.html")
     if os.path.isfile(index_path):
         return FileResponse(index_path)
         
-    return {"error": "Frontend build not found. Please run 'npm run build'."}
+    return {"error": f"前端網頁檔案遺失！伺服器試圖在 {dist_dir} 尋找 index.html 但找不到。"}
