@@ -20,7 +20,7 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const API_BASE = import.meta.env.DEV ? 'http://localhost:8000/api' : '/api';
 
 const formatDate = (ts) => ts && ts.seconds ? new Date(ts.seconds * 1000).toLocaleString() : '無紀錄';
 

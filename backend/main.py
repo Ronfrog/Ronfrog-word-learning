@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import firebase_admin
@@ -191,3 +192,24 @@ def generate_ai(req: GenerateRequest, uid: str = Depends(verify_firebase_token))
         return json.loads(response.text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# -----------------
+# 單體架構：前端靜態網頁託管 (SPA Fallback)
+# -----------------
+@app.get("/{catchall:path}")
+def serve_react_app(catchall: str):
+    # 判斷 dist 資料夾在本地開發還是 Docker 環境內的相對位置
+    dist_dir = "../dist" if os.path.exists("../dist") else "dist"
+    
+    # 如果是真正的靜態檔案 (例如 /assets/index.js)
+    if catchall:
+        dist_path = os.path.join(dist_dir, catchall)
+        if os.path.isfile(dist_path):
+            return FileResponse(dist_path)
+            
+    # 否則一律 fallback 到 React 的首頁 (Single Page Application 必備)
+    index_path = os.path.join(dist_dir, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+        
+    return {"error": "Frontend build not found. Please run 'npm run build'."}
