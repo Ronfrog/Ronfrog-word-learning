@@ -8,7 +8,7 @@ import {
   LogOut, UserCircle
 } from 'lucide-react';
 
-const firebaseConfig = {
+const defaultConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
@@ -17,6 +17,13 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
+
+let firebaseConfig = defaultConfig;
+if (window.FIREBASE_CONFIG && Object.keys(window.FIREBASE_CONFIG).length > 0) {
+  firebaseConfig = window.FIREBASE_CONFIG; // 從 Python 後端動態注入的設定
+} else if (import.meta.env.VITE_FIREBASE_CONFIG_JSON) {
+  try { firebaseConfig = JSON.parse(import.meta.env.VITE_FIREBASE_CONFIG_JSON); } catch (e) { console.error(e); }
+}
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);

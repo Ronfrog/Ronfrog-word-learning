@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, Header
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import firebase_admin
@@ -215,6 +215,15 @@ def serve_react_app(catchall: str):
     # 否則一律 fallback 到 React 首頁 (開啟首頁時 catchall 為空)
     index_path = os.path.join(dist_dir, "index.html")
     if os.path.isfile(index_path):
-        return FileResponse(index_path)
+        # 讀取原本的 index.html 並動態注入 GCP 的執行時期環境變數 (解決 Docker 打包時沒有環境變數導致的空白畫面)
+        with open(index_path, "r", encoding="utf-8") as f:
+            html = f.read()
+            
+        firebase_config_str = os.getenv("VITE_FIREBASE_CONFIG_JSON")
+        if firebase_config_str:
+            script_tag = f"<script>window.FIREBASE_CONFIG = {firebase_config_str};</script>"
+            html = html.replace("<head>", f"<head>{script_tag}")
+            
+        return HTMLResponse(content=html)
         
     return {"error": f"前端網頁檔案遺失！伺服器試圖在 {dist_dir} 尋找 index.html 但找不到。"}
