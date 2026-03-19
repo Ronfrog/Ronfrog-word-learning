@@ -3,7 +3,7 @@ FROM node:20-slim AS frontend-builder
 WORKDIR /app
 # 只先複製 package.json，利用 Docker 快取加速 npm install
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm install --legacy-peer-deps
 # 複製其餘前端程式碼並打包
 COPY . .
 RUN npm run build
