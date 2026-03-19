@@ -1,9 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
-import {
-  getFirestore, collection, addDoc, onSnapshot,
-  doc, updateDoc, serverTimestamp, writeBatch
-} from 'firebase/firestore';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import {
   Plus, Search, Brain, Trash2, Download,
@@ -21,10 +17,10 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'advanced-vocab-app';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
 const formatDate = (ts) => ts && ts.seconds ? new Date(ts.seconds * 1000).toLocaleString() : '無紀錄';
 
@@ -32,7 +28,7 @@ const App = () => {
   const [user, setUser] = useState(undefined);
   const [words, setWords] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [view, setView] = useState('list');
+  const [view, setView] = useState('list'); 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -58,18 +54,48 @@ const App = () => {
   const [quizIndex, setQuizIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
 
+  // --------------------------------------------------------------------------
+  // API Fetch Utility (Injects Firebase Bearer Token securely to backend)
+  // --------------------------------------------------------------------------
+  const fetchBackend = async (url, options = {}) => {
+    if (!user) throw new Error("尚未登入");
+    const token = await user.getIdToken();
+    const headers = { ...options.headers, 'Authorization': `Bearer ${token}` };
+    if (options.body && !(options.body instanceof FormData)) {
+        headers['Content-Type'] = 'application/json';
+    }
+    const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+    if (!res.ok) {
+        const errBox = await res.json().catch(()=>({}));
+        throw new Error(errBox.detail || `伺服器連線異常 (${res.status})`);
+    }
+    return res.json();
+  };
+
+  const loadData = useCallback(async () => {
+    if (!user) return;
+    try {
+        const [wordsData, catsData] = await Promise.all([
+            fetchBackend('/words'),
+            fetchBackend('/categories')
+        ]);
+        setWords(wordsData);
+        setCategories(catsData);
+    } catch (err) {
+        console.error("無法載入資料，請確認後端是否已經啟動", err);
+    }
+  }, [user]);
+
   useEffect(() => {
     return onAuthStateChanged(auth, setUser);
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-    const vocabRef = collection(db, 'artifacts', appId, 'users', user.uid, 'vocabulary');
-    const unsubWords = onSnapshot(vocabRef, snap => setWords(snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
-    const catRef = collection(db, 'artifacts', appId, 'users', user.uid, 'categories');
-    const unsubCats = onSnapshot(catRef, snap => setCategories(snap.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
-    return () => { unsubWords(); unsubCats(); };
-  }, [user]);
+    if (user) loadData();
+    else { setWords([]); setCategories([]); }
+  }, [user, loadData]);
+
+  // --------------------------------------------------------------------------
 
   const changeView = (v) => {
     setView(v);
@@ -78,7 +104,7 @@ const App = () => {
   };
 
   const handleLogin = async () => {
-    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); } 
     catch (err) { alert("登入失敗：" + err.message); }
   };
 
@@ -108,44 +134,37 @@ const App = () => {
     if (!formData.word) return;
     setAiLoading(true);
     const catNames = categories.map(c => c.name).join(', ');
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-    const prompt = `分析英文單字 "${formData.word}"。請以繁體中文回答。提供 JSON格式: {"phonetic": "音標", "pos": "詞性縮寫(如 n., v.)", "definition": "精確的繁體中文釋義", "example": "英文例句 (附上繁體中文翻譯)", "cat1": "...", "cat2": "..."}。類別從 [${catNames}] 挑選或自擬。`;
     try {
-      if (!apiKey) throw new Error("尚未設定 VITE_GEMINI_API_KEY");
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } })
+      // API call routed safely through backend
+      const result = await fetchBackend('/generate', {
+          method: 'POST',
+          body: JSON.stringify({ word: formData.word, categories: catNames })
       });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      const result = JSON.parse(data.candidates[0].content.parts[0].text);
       const findCatId = (name) => categories.find(c => c.name === name)?.id || '';
       setFormData(prev => ({
         ...prev, phonetic: result.phonetic, pos: result.pos, definition: result.definition,
         example: result.example, category1Id: findCatId(result.cat1), category2Id: findCatId(result.cat2)
       }));
-    } catch (err) {
-      console.error(err);
-      alert("AI 分析失敗：" + err.message + "\n\n請確保你的 API Key 正確無誤。");
+    } catch (err) { 
+      console.error(err); 
+      alert("AI 分析失敗：" + err.message + "\n\n請確保後端伺服器 (8000) 正在運行並且金鑰設定正確。");
     } finally { setAiLoading(false); }
   };
 
   const addCategory = async (name) => {
     if (!name || !user) return;
-    try {
-      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'categories'), {
-        name, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
-      });
+    try { 
+        await fetchBackend('/categories', { method: 'POST', body: JSON.stringify({ name }) });
+        await loadData();
     } catch (e) { alert("新增類別失敗:" + e.message); }
   };
 
   const updateCategory = async (id, newName) => {
     if (!user || !newName) return;
     try {
-      await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'categories', id), {
-        name: newName, updatedAt: serverTimestamp()
-      });
-      setEditingCategory(null);
+        await fetchBackend(`/categories/${id}`, { method: 'PUT', body: JSON.stringify({ name: newName }) });
+        setEditingCategory(null);
+        await loadData();
     } catch (e) { alert("更新類別失敗:" + e.message); }
   }
 
@@ -153,17 +172,14 @@ const App = () => {
     e.preventDefault();
     if (!user) return;
     try {
-      // Create a clean payload object, ignoring readonly date fields for update
       const { createdAt, lastTestTime, lastTestResult, ...saveData } = formData;
-
       if (editingWordId) {
-        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'vocabulary', editingWordId), saveData);
+        await fetchBackend(`/words/${editingWordId}`, { method: 'PUT', body: JSON.stringify(saveData) });
       } else {
-        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'vocabulary'), {
-          ...saveData, createdAt: serverTimestamp(), lastTestTime: null, lastTestResult: null
-        });
+        await fetchBackend('/words', { method: 'POST', body: JSON.stringify(saveData) });
       }
       closeWordModal();
+      await loadData();
     } catch (e) { alert("儲存失敗:" + e.message); }
   };
 
@@ -171,31 +187,12 @@ const App = () => {
     if (!user || selectedIds.length === 0) return;
     if (!window.confirm(`確定要刪除選取的 ${selectedIds.length} 個項目嗎？`)) return;
     try {
-      const batch = writeBatch(db);
-
-      // Cascading delete logic for categories
-      if (type === 'categories') {
-        // Find words matching the deleted categories directly from local state to avoid query limits
-        const wordsToUpdate = words.filter(w => selectedIds.includes(w.category1Id) || selectedIds.includes(w.category2Id));
-        wordsToUpdate.forEach(w => {
-          const wRef = doc(db, 'artifacts', appId, 'users', user.uid, 'vocabulary', w.id);
-          const updates = {};
-          if (selectedIds.includes(w.category1Id)) updates.category1Id = "";
-          if (selectedIds.includes(w.category2Id)) updates.category2Id = "";
-          batch.update(wRef, updates);
-        });
-      }
-
-      // Delete selected items
-      selectedIds.forEach(id => {
-        batch.delete(doc(db, 'artifacts', appId, 'users', user.uid, type, id));
-      });
-
-      await batch.commit();
-      setSelectedIds([]);
-      setIsDeleteMode(false);
+        await fetchBackend('/batch-delete', { method: 'POST', body: JSON.stringify({ type, ids: selectedIds }) });
+        setSelectedIds([]);
+        setIsDeleteMode(false);
+        await loadData();
     } catch (error) {
-      alert("刪除失敗：" + error.message);
+        alert("刪除失敗：" + error.message);
     }
   };
 
@@ -221,13 +218,20 @@ const App = () => {
 
   const handleQuizResult = async (isCorrect) => {
     const wordId = currentQuiz[quizIndex].id;
-    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'vocabulary', wordId), {
-      lastTestTime: serverTimestamp(), lastTestResult: isCorrect
-    });
+    
+    // 先送出更新請求並取得 Promise
+    const updatePromise = fetchBackend(`/words/${wordId}/quiz`, { method: 'PUT', body: JSON.stringify({ isCorrect }) })
+        .catch(e => console.error("Quiz record failed", e));
+        
+    // Optimistic local update (畫面先即時更新)
+    setWords(prev => prev.map(w => w.id === wordId ? { ...w, lastTestResult: isCorrect, lastTestTime: { seconds: Math.floor(Date.now() / 1000) } } : w));
+
     if (quizIndex + 1 < currentQuiz.length) {
-      setQuizIndex(p => p + 1); setShowAnswer(false);
+      setQuizIndex(p => p+1); setShowAnswer(false);
     } else {
       changeView('list'); setCurrentQuiz(null);
+      await updatePromise; // 確保最後一題確認寫入 Firebase 後，再進行整包同步
+      await loadData(); // fully sync after quiz finishes
     }
   };
 
@@ -240,7 +244,8 @@ const App = () => {
     ).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
   }, [words, searchTerm]);
 
-  if (user === undefined) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><RefreshCw className="animate-spin text-indigo-600" size={32} /></div>;
+
+  if (user === undefined) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><RefreshCw className="animate-spin text-indigo-600" size={32}/></div>;
   if (user === null) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 flex items-center justify-center p-4">
@@ -252,11 +257,11 @@ const App = () => {
             <h1 className="text-3xl font-black text-slate-800 mb-2">智能單字庫</h1>
             <p className="text-slate-500">專屬你的 AI 擴充詞彙助理</p>
           </div>
-          <button
+          <button 
             onClick={handleLogin}
             className="w-full bg-slate-900 border border-slate-800 text-white font-bold py-4 px-6 rounded-2xl flex items-center justify-center gap-3 hover:bg-slate-800 transition-all shadow-lg shadow-slate-200"
           >
-            <svg className="w-5 h-5 bg-white p-0.5 rounded-full" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
+            <svg className="w-5 h-5 bg-white p-0.5 rounded-full" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
             使用 Google 帳號登入
           </button>
         </div>
@@ -273,16 +278,16 @@ const App = () => {
             <h1 className="font-bold text-lg hidden sm:block">智能單字庫</h1>
           </div>
           <div className="flex gap-2 items-center">
-            <button onClick={() => changeView('category-mgr')} className={`p-2 rounded-lg ${view === 'category-mgr' ? 'bg-slate-100' : 'hover:bg-slate-100 text-slate-500'}`} title="類別"><Layers size={20} /></button>
-            <button onClick={() => changeView('list')} className={`p-2 rounded-lg ${view === 'list' ? 'bg-slate-100' : 'hover:bg-slate-100 text-slate-500'}`} title="單字庫"><BookOpen size={20} /></button>
+            <button onClick={() => changeView('category-mgr')} className={`p-2 rounded-lg ${view==='category-mgr'?'bg-slate-100':'hover:bg-slate-100 text-slate-500'}`} title="類別"><Layers size={20} /></button>
+            <button onClick={() => changeView('list')} className={`p-2 rounded-lg ${view==='list'?'bg-slate-100':'hover:bg-slate-100 text-slate-500'}`} title="單字庫"><BookOpen size={20} /></button>
             <button onClick={() => changeView('quiz-setup')} className="flex items-center gap-2 bg-indigo-50 text-indigo-700 px-4 py-2 rounded-xl font-medium"><PlayCircle size={20} /> 測驗</button>
             <button onClick={() => openWordModal()} className="bg-indigo-600 text-white px-4 py-2 rounded-xl font-medium shadow-md flex items-center gap-1"><Plus size={20} /> 新增</button>
-
+            
             <div className="h-6 w-px bg-slate-200 mx-2"></div>
-
+            
             <div className="flex items-center gap-2">
-              {user.photoURL ? <img src={user.photoURL} className="w-8 h-8 rounded-full border border-slate-200" alt="avatar" /> : <UserCircle size={24} className="text-slate-400" />}
-              <button onClick={() => signOut(auth)} className="p-2 text-slate-400 hover:text-red-500 rounded-lg hover:bg-red-50" title="登出"><LogOut size={20} /></button>
+               {user.photoURL ? <img src={user.photoURL} className="w-8 h-8 rounded-full border border-slate-200" alt="avatar"/> : <UserCircle size={24} className="text-slate-400" />}
+               <button onClick={() => signOut(auth)} className="p-2 text-slate-400 hover:text-red-500 rounded-lg hover:bg-red-50" title="登出"><LogOut size={20}/></button>
             </div>
           </div>
         </div>
@@ -303,52 +308,52 @@ const App = () => {
               </div>
               {isDeleteMode ? (
                 <div className="flex gap-2">
-                  <button onClick={() => { setIsDeleteMode(false); setSelectedIds([]) }} className="px-4 py-3 bg-slate-200 text-slate-600 rounded-2xl font-bold transition-colors">取消</button>
-                  <button onClick={() => handleBatchDelete('vocabulary')} disabled={selectedIds.length === 0} className="px-4 py-3 bg-red-500 text-white rounded-2xl font-bold transition-colors disabled:opacity-50">確認刪除 ({selectedIds.length})</button>
+                  <button onClick={() => {setIsDeleteMode(false); setSelectedIds([])}} className="px-4 py-3 bg-slate-200 text-slate-600 rounded-2xl font-bold transition-colors">取消</button>
+                  <button onClick={() => handleBatchDelete('vocabulary')} disabled={selectedIds.length===0} className="px-4 py-3 bg-red-500 text-white rounded-2xl font-bold transition-colors disabled:opacity-50">確認刪除 ({selectedIds.length})</button>
                 </div>
               ) : (
                 <button onClick={() => setIsDeleteMode(true)} className="px-4 py-3 bg-white border border-slate-200 text-red-500 hover:bg-red-50 rounded-2xl font-bold flex gap-2 items-center transition-all shadow-sm">
-                  <Trash2 size={18} /> 批次刪除
+                  <Trash2 size={18}/> 批次刪除
                 </button>
               )}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {filteredWords.map(word => {
-                const isSelected = selectedIds.includes(word.id);
-                return (
-                  <div
-                    onClick={() => {
-                      if (isDeleteMode) toggleSelect(word.id);
-                      else openWordModal(word);
-                    }}
-                    key={word.id}
-                    className={`bg-white p-5 rounded-2xl shadow-sm border relative transition-all ${isDeleteMode ? 'cursor-pointer hover:border-red-300' : 'cursor-pointer hover:border-indigo-300 hover:shadow-md'} ${isSelected ? 'border-red-500 bg-red-50 ring-2 ring-red-200' : 'border-slate-100'}`}
-                  >
-                    {isDeleteMode && (
-                      <div className={`absolute top-4 right-4 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${isSelected ? 'border-red-500 bg-red-500 text-white' : 'border-slate-300'}`}>
-                        {isSelected && <Check size={14} />}
-                      </div>
-                    )}
-                    <div className="flex justify-between items-start mb-2">
-                      <div className="flex gap-1">
-                        {word.category1Id && <span className="bg-blue-50 text-blue-600 text-[10px] px-2 py-0.5 rounded-full">{getCatName(word.category1Id)}</span>}
-                        {word.category2Id && <span className="bg-purple-50 text-purple-600 text-[10px] px-2 py-0.5 rounded-full">{getCatName(word.category2Id)}</span>}
-                      </div>
-                      {!isDeleteMode && word.lastTestResult !== null && (
-                        <span className={word.lastTestResult ? "text-green-500" : "text-red-500"} title={word.lastTestResult ? '已學會' : '需複習'}>
-                          {word.lastTestResult ? <Check size={16} /> : <XCircle size={16} />}
-                        </span>
-                      )}
+                  const isSelected = selectedIds.includes(word.id);
+                  return (
+                    <div 
+                        onClick={() => {
+                            if (isDeleteMode) toggleSelect(word.id);
+                            else openWordModal(word);
+                        }} 
+                        key={word.id} 
+                        className={`bg-white p-5 rounded-2xl shadow-sm border relative transition-all ${isDeleteMode ? 'cursor-pointer hover:border-red-300' : 'cursor-pointer hover:border-indigo-300 hover:shadow-md'} ${isSelected ? 'border-red-500 bg-red-50 ring-2 ring-red-200' : 'border-slate-100'}`}
+                    >
+                        {isDeleteMode && (
+                            <div className={`absolute top-4 right-4 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${isSelected ? 'border-red-500 bg-red-500 text-white' : 'border-slate-300'}`}>
+                                {isSelected && <Check size={14}/>}
+                            </div>
+                        )}
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="flex gap-1">
+                            {word.category1Id && <span className="bg-blue-50 text-blue-600 text-[10px] px-2 py-0.5 rounded-full">{getCatName(word.category1Id)}</span>}
+                            {word.category2Id && <span className="bg-purple-50 text-purple-600 text-[10px] px-2 py-0.5 rounded-full">{getCatName(word.category2Id)}</span>}
+                          </div>
+                          {!isDeleteMode && word.lastTestResult !== null && (
+                            <span className={word.lastTestResult ? "text-green-500" : "text-red-500"} title={word.lastTestResult ? '已學會' : '需複習'}>
+                              {word.lastTestResult ? <Check size={16} /> : <XCircle size={16} />}
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="text-xl font-bold flex items-baseline gap-2">
+                          {word.word}
+                          <span className="text-sm font-normal text-slate-400">/{word.phonetic}/</span>
+                        </h3>
+                        <div className="text-indigo-600 font-medium text-sm my-1">{word.pos} {word.definition}</div>
+                        <p className="text-xs text-slate-500 italic mt-2 line-clamp-2">{word.example}</p>
                     </div>
-                    <h3 className="text-xl font-bold flex items-baseline gap-2">
-                      {word.word}
-                      <span className="text-sm font-normal text-slate-400">/{word.phonetic}/</span>
-                    </h3>
-                    <div className="text-indigo-600 font-medium text-sm my-1">{word.pos} {word.definition}</div>
-                    <p className="text-xs text-slate-500 italic mt-2 line-clamp-2">{word.example}</p>
-                  </div>
-                );
+                  );
               })}
             </div>
           </div>
@@ -357,49 +362,49 @@ const App = () => {
         {view === 'category-mgr' && (
           <div className="max-w-md mx-auto bg-white p-6 rounded-3xl shadow-sm border">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold flex gap-2 items-center"><Layers /> 類別管理</h2>
-              {isDeleteMode ? (
-                <div className="flex gap-2">
-                  <button onClick={() => { setIsDeleteMode(false); setSelectedIds([]) }} className="px-3 py-1 bg-slate-200 text-slate-600 rounded-lg text-sm font-bold">取消</button>
-                  <button onClick={() => handleBatchDelete('categories')} disabled={selectedIds.length === 0} className="px-3 py-1 bg-red-500 text-white rounded-lg disabled:opacity-50 text-sm font-bold">刪除 ({selectedIds.length})</button>
-                </div>
-              ) : (
-                <button onClick={() => setIsDeleteMode(true)} className="px-3 py-1 text-red-500 hover:bg-red-50 rounded-lg flex items-center gap-1 text-sm"><Trash2 size={16} /> 批次刪除</button>
-              )}
+                <h2 className="text-xl font-bold flex gap-2 items-center"><Layers/> 類別管理</h2>
+                {isDeleteMode ? (
+                    <div className="flex gap-2">
+                        <button onClick={()=>{setIsDeleteMode(false); setSelectedIds([])}} className="px-3 py-1 bg-slate-200 text-slate-600 rounded-lg text-sm font-bold">取消</button>
+                        <button onClick={() => handleBatchDelete('categories')} disabled={selectedIds.length===0} className="px-3 py-1 bg-red-500 text-white rounded-lg disabled:opacity-50 text-sm font-bold">刪除 ({selectedIds.length})</button>
+                    </div>
+                ) : (
+                    <button onClick={()=>setIsDeleteMode(true)} className="px-3 py-1 text-red-500 hover:bg-red-50 rounded-lg flex items-center gap-1 text-sm"><Trash2 size={16}/> 批次刪除</button>
+                )}
             </div>
 
             {!isDeleteMode && (
-              <div className="flex gap-2 mb-6">
-                <input id="newCatInput" type="text" placeholder="新類別名稱" className="flex-1 px-4 py-2 bg-slate-100 rounded-xl outline-none" />
-                <button onClick={() => {
-                  const el = document.getElementById('newCatInput');
-                  addCategory(el.value);
-                  el.value = '';
-                }} className="bg-indigo-600 text-white px-4 py-2 rounded-xl font-medium">新增</button>
-              </div>
+                <div className="flex gap-2 mb-6">
+                    <input id="newCatInput" type="text" placeholder="新類別名稱" className="flex-1 px-4 py-2 bg-slate-100 rounded-xl outline-none" />
+                    <button onClick={()=>{
+                        const el = document.getElementById('newCatInput');
+                        addCategory(el.value);
+                        el.value = '';
+                    }} className="bg-indigo-600 text-white px-4 py-2 rounded-xl font-medium">新增</button>
+                </div>
             )}
-
+            
             <div className="space-y-2">
-              {categories.map(cat => {
-                const isSelected = selectedIds.includes(cat.id);
-                return (
-                  <div
-                    onClick={() => {
-                      if (isDeleteMode) toggleSelect(cat.id);
-                      else setEditingCategory(cat);
-                    }}
-                    key={cat.id}
-                    className={`flex justify-between items-center p-4 rounded-xl border transition-all ${isDeleteMode ? 'cursor-pointer hover:border-red-200' : 'cursor-pointer hover:border-indigo-200 hover:bg-indigo-50 border-transparent bg-slate-50'} ${isSelected ? 'bg-red-50 border-red-300' : ''}`}
-                  >
-                    <span className={isSelected ? 'text-red-700 font-medium' : ''}>{cat.name}</span>
-                    {isDeleteMode && (
-                      <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${isSelected ? 'bg-red-500 border-red-500 text-white' : 'bg-white border-slate-300'}`}>
-                        {isSelected && <Check size={12} />}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                {categories.map(cat => {
+                    const isSelected = selectedIds.includes(cat.id);
+                    return (
+                        <div 
+                            onClick={() => {
+                                if (isDeleteMode) toggleSelect(cat.id);
+                                else setEditingCategory(cat);
+                            }} 
+                            key={cat.id} 
+                            className={`flex justify-between items-center p-4 rounded-xl border transition-all ${isDeleteMode ? 'cursor-pointer hover:border-red-200' : 'cursor-pointer hover:border-indigo-200 hover:bg-indigo-50 border-transparent bg-slate-50'} ${isSelected ? 'bg-red-50 border-red-300' : ''}`}
+                        >
+                            <span className={isSelected ? 'text-red-700 font-medium' : ''}>{cat.name}</span>
+                            {isDeleteMode && (
+                                <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${isSelected ? 'bg-red-500 border-red-500 text-white' : 'bg-white border-slate-300'}`}>
+                                    {isSelected && <Check size={12}/>}
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
             </div>
           </div>
         )}
@@ -435,7 +440,7 @@ const App = () => {
                 <input type="number" className="w-full mt-1 p-3 bg-slate-100 rounded-xl outline-none" value={quizConfig.count} onChange={(e) => setQuizConfig({ ...quizConfig, count: parseInt(e.target.value) })} />
               </label>
             </div>
-            <button onClick={startQuiz} className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold text-lg shadow-lg active:scale-95 transition-all flex justify-center"><PlayCircle />&nbsp;開始測驗</button>
+            <button onClick={startQuiz} className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold text-lg shadow-lg active:scale-95 transition-all flex justify-center"><PlayCircle/>&nbsp;開始測驗</button>
           </div>
         )}
 
@@ -503,14 +508,14 @@ const App = () => {
             <form onSubmit={handleSaveWord} className="p-6 overflow-y-auto space-y-6">
               {editingWordId && (
                 <div className="bg-slate-50 p-4 rounded-xl space-y-2 text-sm text-slate-600 border border-slate-200 shadow-inner">
-                  <div className="flex justify-between"><span>建立時間：</span><span className="font-medium text-slate-800">{formatDate(formData.createdAt)}</span></div>
-                  <div className="flex justify-between"><span>最新測驗：</span><span className="font-medium text-slate-800">{formatDate(formData.lastTestTime)}</span></div>
-                  <div className="flex justify-between">
-                    <span>最新結果：</span>
-                    <span className={`font-bold ${formData.lastTestResult === null ? 'text-slate-400' : (formData.lastTestResult ? 'text-green-600' : 'text-red-500')}`}>
-                      {formData.lastTestResult === null ? '尚未測驗' : (formData.lastTestResult ? '認識 (Pass)' : '不認識 (Fail)')}
-                    </span>
-                  </div>
+                    <div className="flex justify-between"><span>建立時間：</span><span className="font-medium text-slate-800">{formatDate(formData.createdAt)}</span></div>
+                    <div className="flex justify-between"><span>最新測驗：</span><span className="font-medium text-slate-800">{formatDate(formData.lastTestTime)}</span></div>
+                    <div className="flex justify-between">
+                        <span>最新結果：</span>
+                        <span className={`font-bold ${formData.lastTestResult===null ? 'text-slate-400' : (formData.lastTestResult ? 'text-green-600' : 'text-red-500')}`}>
+                            {formData.lastTestResult === null ? '尚未測驗' : (formData.lastTestResult ? '認識 (Pass)' : '不認識 (Fail)')}
+                        </span>
+                    </div>
                 </div>
               )}
 
@@ -559,28 +564,28 @@ const App = () => {
       {/* Category Edit Modal */}
       {editingCategory && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-sm rounded-[32px] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in duration-300 p-6">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold">編輯類別設定</h2>
-              <button onClick={() => setEditingCategory(null)} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
+            <div className="bg-white w-full max-w-sm rounded-[32px] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in duration-300 p-6">
+                <div className="flex justify-between items-center mb-6">
+                    <h2 className="text-xl font-bold">編輯類別設定</h2>
+                    <button onClick={() => setEditingCategory(null)} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
+                </div>
+                <div className="space-y-4">
+                    <div>
+                        <label className="text-sm font-medium text-slate-500 mb-1 block pl-2">類別名稱</label>
+                        <input id="editCatName" defaultValue={editingCategory.name} className="w-full px-4 py-3 bg-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500" />
+                    </div>
+                    <div className="bg-slate-50 p-4 rounded-xl text-xs text-slate-500 space-y-3 border shadow-inner">
+                        <div className="flex justify-between border-b pb-2"><span>建立時間</span><span className="font-medium text-slate-700">{formatDate(editingCategory.createdAt)}</span></div>
+                        <div className="flex justify-between"><span>最後更新</span><span className="font-medium text-slate-700">{formatDate(editingCategory.updatedAt)}</span></div>
+                    </div>
+                    <button 
+                        onClick={() => updateCategory(editingCategory.id, document.getElementById('editCatName').value)} 
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 transition-colors text-white py-4 rounded-2xl font-bold flex justify-center mt-4 shadow-md"
+                    >
+                        確認更改
+                    </button>
+                </div>
             </div>
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm font-medium text-slate-500 mb-1 block pl-2">類別名稱</label>
-                <input id="editCatName" defaultValue={editingCategory.name} className="w-full px-4 py-3 bg-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500" />
-              </div>
-              <div className="bg-slate-50 p-4 rounded-xl text-xs text-slate-500 space-y-3 border shadow-inner">
-                <div className="flex justify-between border-b pb-2"><span>建立時間</span><span className="font-medium text-slate-700">{formatDate(editingCategory.createdAt)}</span></div>
-                <div className="flex justify-between"><span>最後更新</span><span className="font-medium text-slate-700">{formatDate(editingCategory.updatedAt)}</span></div>
-              </div>
-              <button
-                onClick={() => updateCategory(editingCategory.id, document.getElementById('editCatName').value)}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 transition-colors text-white py-4 rounded-2xl font-bold flex justify-center mt-4 shadow-md"
-              >
-                確認更改
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
