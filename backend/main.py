@@ -56,7 +56,18 @@ def verify_firebase_token(authorization: str = Header(None)):
     token = authorization.split(" ")[1]
     try:
         decoded_token = auth.verify_id_token(token)
+        email = decoded_token.get("email", "")
+        
+        # 白名單權限管理
+        allowed_emails_str = os.getenv("ALLOWED_EMAILS", "")
+        if allowed_emails_str:
+            allowed_emails = [e.strip() for e in allowed_emails_str.split(",") if e.strip()]
+            if allowed_emails and email not in allowed_emails:
+                raise HTTPException(status_code=403, detail=f"抱歉，你的信箱 ({email}) 尚未被管理員開放權限。")
+                
         return decoded_token['uid']
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Unauthorized: {str(e)}")
 
