@@ -39,6 +39,10 @@ const App = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'createdAt', order: 'desc' });
+  const [filterConfig, setFilterConfig] = useState({
+    category: 'all', month: 'all', difficulty: 'all', testResult: 'all'
+  });
 
   // Editing Modals State
   const [editingWordId, setEditingWordId] = useState(null);
@@ -89,7 +93,11 @@ const App = () => {
         setWords(wordsData);
         setCategories(catsData);
     } catch (err) {
-        console.error("無法載入資料，請確認後端是否已經啟動", err);
+        console.error("無法載入資料", err);
+        if (err.message.includes("未被管理員開放")) {
+            alert(err.message);
+            signOut(auth);
+        }
     }
   }, [user]);
 
@@ -244,12 +252,63 @@ const App = () => {
 
   const getCatName = id => categories.find(c => c.id === id)?.name || '-';
 
+  const availableMonths = useMemo(() => {
+    const months = new Set();
+    words.forEach(w => {
+      if (w.createdAt?.seconds) {
+        const d = new Date(w.createdAt.seconds * 1000);
+        months.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+      }
+    });
+    return Array.from(months).sort().reverse();
+  }, [words]);
+
   const filteredWords = useMemo(() => {
-    return words.filter(w =>
+    let result = words.filter(w =>
       w.word.toLowerCase().includes(searchTerm.toLowerCase()) ||
       w.definition.includes(searchTerm)
-    ).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-  }, [words, searchTerm]);
+    );
+
+    if (filterConfig.category !== 'all') {
+      result = result.filter(w => w.category1Id === filterConfig.category || w.category2Id === filterConfig.category);
+    }
+    if (filterConfig.month !== 'all') {
+      result = result.filter(w => {
+        if (!w.createdAt?.seconds) return false;
+        const d = new Date(w.createdAt.seconds * 1000);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` === filterConfig.month;
+      });
+    }
+    if (filterConfig.difficulty !== 'all') {
+      result = result.filter(w => w.difficulty === parseInt(filterConfig.difficulty));
+    }
+    if (filterConfig.testResult !== 'all') {
+      result = result.filter(w => {
+        if (filterConfig.testResult === 'correct') return w.lastTestResult === true;
+        if (filterConfig.testResult === 'wrong') return w.lastTestResult === false;
+        if (filterConfig.testResult === 'untested') return w.lastTestResult === null;
+        return true;
+      });
+    }
+
+    result.sort((a, b) => {
+      let valA, valB;
+      switch (sortConfig.key) {
+        case 'createdAt': valA = a.createdAt?.seconds || 0; valB = b.createdAt?.seconds || 0; break;
+        case 'lastTestTime': valA = a.lastTestTime?.seconds || 0; valB = b.lastTestTime?.seconds || 0; break;
+        case 'difficulty': valA = a.difficulty || 0; valB = b.difficulty || 0; break;
+        case 'testError': 
+          valA = a.lastTestResult === false ? -1 : (a.lastTestResult === true ? 1 : 0);
+          valB = b.lastTestResult === false ? -1 : (b.lastTestResult === true ? 1 : 0);
+          break;
+        case 'word': 
+        default:
+          return sortConfig.order === 'asc' ? a.word.localeCompare(b.word) : b.word.localeCompare(a.word);
+      }
+      return sortConfig.order === 'asc' ? valA - valB : valB - valA;
+    });
+    return result;
+  }, [words, searchTerm, sortConfig, filterConfig]);
 
 
   if (user === undefined) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><RefreshCw className="animate-spin text-indigo-600" size={32}/></div>;
@@ -324,6 +383,39 @@ const App = () => {
                 </button>
               )}
             </div>
+
+            {!isDeleteMode && (
+              <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 grid grid-cols-2 lg:grid-cols-6 gap-3 animate-in fade-in duration-300">
+                <select className="px-3 py-2 bg-slate-50 border rounded-xl outline-none text-sm text-slate-600" value={filterConfig.category} onChange={e => setFilterConfig({...filterConfig, category: e.target.value})}>
+                  <option value="all">所有類別</option>
+                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <select className="px-3 py-2 bg-slate-50 border rounded-xl outline-none text-sm text-slate-600" value={filterConfig.month} onChange={e => setFilterConfig({...filterConfig, month: e.target.value})}>
+                  <option value="all">所有月份</option>
+                  {availableMonths.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+                <select className="px-3 py-2 bg-slate-50 border rounded-xl outline-none text-sm text-slate-600" value={filterConfig.difficulty} onChange={e => setFilterConfig({...filterConfig, difficulty: e.target.value})}>
+                  <option value="all">難度篩選</option>
+                  <option value="1">1 星</option><option value="2">2 星</option><option value="3">3 星</option><option value="4">4 星</option><option value="5">5 星</option>
+                </select>
+                <select className="px-3 py-2 bg-slate-50 border rounded-xl outline-none text-sm text-slate-600" value={filterConfig.testResult} onChange={e => setFilterConfig({...filterConfig, testResult: e.target.value})}>
+                  <option value="all">測驗結果</option>
+                  <option value="correct">答對過</option>
+                  <option value="wrong">曾答錯</option>
+                  <option value="untested">未測驗</option>
+                </select>
+                <select className="px-3 py-2 bg-indigo-50 border border-indigo-100 rounded-xl outline-none text-sm text-indigo-700 font-medium" value={sortConfig.key} onChange={e => setSortConfig({...sortConfig, key: e.target.value})}>
+                  <option value="createdAt">加入時間排序</option>
+                  <option value="lastTestTime">測驗時間排序</option>
+                  <option value="word">字母順序排序</option>
+                  <option value="difficulty">難易度排序</option>
+                  <option value="testError">答錯優先排序</option>
+                </select>
+                <button onClick={() => setSortConfig({...sortConfig, order: sortConfig.order === 'asc' ? 'desc' : 'asc'})} className="flex items-center justify-center gap-1 px-3 py-2 bg-indigo-50 border border-indigo-100 rounded-xl text-sm text-indigo-700 font-bold hover:bg-indigo-100 transition-colors shadow-sm">
+                  {sortConfig.order === 'asc' ? '↑ 升冪' : '↓ 降冪'}
+                </button>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {filteredWords.map(word => {
