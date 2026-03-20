@@ -113,6 +113,19 @@ const App = () => {
     setUser(null);
   };
 
+  // 登入狀態改變時，自動讀取最新單字庫資料
+  useEffect(() => {
+    if (user && user.token) loadData();
+    else { setWords([]); setCategories([]); }
+  }, [user, loadData]);
+
+  // 切換不同介面，並清空選取狀態
+  const changeView = (v) => {
+    setView(v);
+    setIsDeleteMode(false);
+    setSelectedIds([]);
+  };
+
   const openWordModal = (word = null) => {
     if (word) {
       setEditingWordId(word.id);
