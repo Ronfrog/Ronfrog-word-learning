@@ -55,8 +55,19 @@ def verify_firebase_token(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Unauthorized: Token missing")
     token = authorization.split(" ")[1]
     try:
-        decoded_token = auth.verify_id_token(token)
-        email = decoded_token.get("email", "")
+        # 優先嘗試 Google Identity Services 原生驗證 (免 Firebase 前端)
+        client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+        try:
+            from google.oauth2 import id_token
+            from google.auth.transport import requests as google_requests
+            decoded_token = id_token.verify_oauth2_token(token, google_requests.Request(), client_id, clock_skew_in_seconds=10)
+            email = decoded_token.get("email", "")
+            return_uid = decoded_token.get("sub")
+        except Exception:
+            # Fallback：保留原來的 Firebase Auth 驗證，避免舊版 APP 用戶死機
+            decoded_token = auth.verify_id_token(token)
+            email = decoded_token.get("email", "")
+            return_uid = decoded_token.get("uid")
         
         # 白名單權限管理
         allowed_emails_str = os.getenv("ALLOWED_EMAILS", "")
@@ -65,7 +76,7 @@ def verify_firebase_token(authorization: str = Header(None)):
             if allowed_emails and email not in allowed_emails:
                 raise HTTPException(status_code=403, detail=f"抱歉，你的信箱 ({email}) 尚未被管理員開放權限。")
                 
-        return decoded_token['uid']
+        return return_uid
     except HTTPException:
         raise
     except Exception as e:
@@ -226,13 +237,21 @@ def serve_react_app(catchall: str):
     # 否則一律 fallback 到 React 首頁 (開啟首頁時 catchall 為空)
     index_path = os.path.join(dist_dir, "index.html")
     if os.path.isfile(index_path):
-        # 讀取原本的 index.html 並動態注入 GCP 的執行時期環境變數 (解決 Docker 打包時沒有環境變數導致的空白畫面)
+        # 讀取原本的 index.html 並動態注入 GCP 的執行時期環境變數
         with open(index_path, "r", encoding="utf-8") as f:
             html = f.read()
             
-        firebase_config_str = os.getenv("VITE_FIREBASE_CONFIG_JSON")
+        firebase_config_str = os.getenv("VITE_FIREBASE_CONFIG_JSON", "")
+        google_client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+        
+        script_content = ""
         if firebase_config_str:
-            script_tag = f"<script>window.FIREBASE_CONFIG = {firebase_config_str};</script>"
+            script_content += f"window.FIREBASE_CONFIG = {firebase_config_str};\n"
+        if google_client_id:
+            script_content += f"window.GOOGLE_CLIENT_ID = '{google_client_id}';\n"
+            
+        if script_content:
+            script_tag = f"<script>{script_content}</script>"
             html = html.replace("<head>", f"<head>{script_tag}")
             
         return HTMLResponse(content=html)
