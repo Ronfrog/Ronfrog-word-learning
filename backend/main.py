@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, Header, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -46,6 +46,18 @@ app.add_middleware(
 )
 
 APP_ID = "advanced-vocab-app"
+SUPPORTED_LANGS = {"en", "ja"}
+
+# -----------------
+# Helper: 多語言 Firestore 路徑
+# -----------------
+def get_lang_base(uid: str, lang: str):
+    """返回指定語言的 Firestore 基礎路徑 reference"""
+    if lang not in SUPPORTED_LANGS:
+        raise HTTPException(status_code=400, detail=f"不支援的語言: {lang}")
+    return (db.collection('artifacts').document(APP_ID)
+              .collection('users').document(uid)
+              .collection('languages').document(lang))
 
 # -----------------
 # 依賴: 驗證 Token
@@ -122,17 +134,19 @@ def format_doc(doc):
     return {"id": doc.id, **data}
 
 # -----------------
-# API 路由
+# API 路由 (全部支援 lang 參數)
 # -----------------
 
 @app.get("/api/categories")
-def get_categories(uid: str = Depends(verify_firebase_token)):
-    docs = db.collection('artifacts').document(APP_ID).collection('users').document(uid).collection('categories').get()
+def get_categories(lang: str = Query("en"), uid: str = Depends(verify_firebase_token)):
+    base = get_lang_base(uid, lang)
+    docs = base.collection('categories').get()
     return sorted([format_doc(doc) for doc in docs], key=lambda x: x.get('createdAt', {}).get('seconds', 0), reverse=True)
 
 @app.post("/api/categories")
-def create_category(cat: CategoryCreate, uid: str = Depends(verify_firebase_token)):
-    res = db.collection('artifacts').document(APP_ID).collection('users').document(uid).collection('categories').add({
+def create_category(cat: CategoryCreate, lang: str = Query("en"), uid: str = Depends(verify_firebase_token)):
+    base = get_lang_base(uid, lang)
+    res = base.collection('categories').add({
         "name": cat.name,
         "createdAt": firestore.SERVER_TIMESTAMP,
         "updatedAt": firestore.SERVER_TIMESTAMP
@@ -140,46 +154,53 @@ def create_category(cat: CategoryCreate, uid: str = Depends(verify_firebase_toke
     return {"id": res[1].id}
 
 @app.put("/api/categories/{cat_id}")
-def update_category(cat_id: str, cat: CategoryCreate, uid: str = Depends(verify_firebase_token)):
-    db.collection('artifacts').document(APP_ID).collection('users').document(uid).collection('categories').document(cat_id).update({
+def update_category(cat_id: str, cat: CategoryCreate, lang: str = Query("en"), uid: str = Depends(verify_firebase_token)):
+    base = get_lang_base(uid, lang)
+    base.collection('categories').document(cat_id).update({
         "name": cat.name,
         "updatedAt": firestore.SERVER_TIMESTAMP
     })
     return {"status": "ok"}
 
 @app.get("/api/words")
-def get_words(uid: str = Depends(verify_firebase_token)):
-    docs = db.collection('artifacts').document(APP_ID).collection('users').document(uid).collection('vocabulary').get()
+def get_words(lang: str = Query("en"), uid: str = Depends(verify_firebase_token)):
+    base = get_lang_base(uid, lang)
+    docs = base.collection('vocabulary').get()
     return sorted([format_doc(doc) for doc in docs], key=lambda x: x.get('createdAt', {}).get('seconds', 0), reverse=True)
 
 @app.post("/api/words")
-def create_word(word: WordCreate, uid: str = Depends(verify_firebase_token)):
+def create_word(word: WordCreate, lang: str = Query("en"), uid: str = Depends(verify_firebase_token)):
+    base = get_lang_base(uid, lang)
     data = word.dict()
     data['createdAt'] = firestore.SERVER_TIMESTAMP
     data['lastTestTime'] = None
     data['lastTestResult'] = None
-    res = db.collection('artifacts').document(APP_ID).collection('users').document(uid).collection('vocabulary').add(data)
+    res = base.collection('vocabulary').add(data)
     return {"id": res[1].id}
 
 @app.put("/api/words/{word_id}")
-def update_word(word_id: str, word: WordCreate, uid: str = Depends(verify_firebase_token)):
-    db.collection('artifacts').document(APP_ID).collection('users').document(uid).collection('vocabulary').document(word_id).update(word.dict())
+def update_word(word_id: str, word: WordCreate, lang: str = Query("en"), uid: str = Depends(verify_firebase_token)):
+    base = get_lang_base(uid, lang)
+    base.collection('vocabulary').document(word_id).update(word.dict())
     return {"status": "ok"}
 
 @app.put("/api/words/{word_id}/quiz")
-def update_quiz(word_id: str, req: QuizResultReq, uid: str = Depends(verify_firebase_token)):
-    db.collection('artifacts').document(APP_ID).collection('users').document(uid).collection('vocabulary').document(word_id).update({
+def update_quiz(word_id: str, req: QuizResultReq, lang: str = Query("en"), uid: str = Depends(verify_firebase_token)):
+    base = get_lang_base(uid, lang)
+    base.collection('vocabulary').document(word_id).update({
         "lastTestTime": firestore.SERVER_TIMESTAMP,
         "lastTestResult": req.isCorrect
     })
     return {"status": "ok"}
 
 @app.post("/api/batch-delete")
-def batch_delete(req: BatchDeleteReq, uid: str = Depends(verify_firebase_token)):
+def batch_delete(req: BatchDeleteReq, lang: str = Query("en"), uid: str = Depends(verify_firebase_token)):
+    base = get_lang_base(uid, lang)
     batch = db.batch()
     
+    # 刪除類別時，需清除單字中對應的類別引用
     if req.type == 'categories':
-        words_ref = db.collection('artifacts').document(APP_ID).collection('users').document(uid).collection('vocabulary')
+        words_ref = base.collection('vocabulary')
         docs = words_ref.get()
         for doc in docs:
             data = doc.to_dict()
@@ -190,21 +211,29 @@ def batch_delete(req: BatchDeleteReq, uid: str = Depends(verify_firebase_token))
                 updates['category2Id'] = ""
             if updates:
                 batch.update(doc.reference, updates)
-                
+    
+    # 決定要刪除的集合名稱
+    collection_name = 'vocabulary' if req.type == 'vocabulary' else req.type
     for current_id in req.ids:
-        doc_ref = db.collection('artifacts').document(APP_ID).collection('users').document(uid).collection(req.type).document(current_id)
+        doc_ref = base.collection(collection_name).document(current_id)
         batch.delete(doc_ref)
         
     batch.commit()
     return {"status": "ok"}
 
 @app.post("/api/generate")
-def generate_ai(req: GenerateRequest, uid: str = Depends(verify_firebase_token)):
+def generate_ai(req: GenerateRequest, lang: str = Query("en"), uid: str = Depends(verify_firebase_token)):
     if not os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") == "請在這裡貼上你的金鑰":
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY 未在後端 .env 設定")
-        
+    
     model = genai.GenerativeModel('gemini-flash-latest')
-    prompt = f'分析英文單字 "{req.word}"。請以繁體中文回答。提供 JSON格式: {{"phonetic": "音標", "pos": "詞性縮寫(如 n., v.)", "definition": "精確的繁體中文釋義", "example": "英文例句 (附上繁體中文翻譯)", "cat1": "...", "cat2": "..."}}。類別從 [{req.categories}] 挑選或自擬。'
+    
+    # 根據語言切換 AI Prompt
+    prompts = {
+        "en": f'分析英文單字 "{req.word}"。請以繁體中文回答。提供 JSON格式: {{"phonetic": "音標", "pos": "詞性縮寫(如 n., v.)", "definition": "精確的繁體中文釋義", "example": "英文例句 (附上繁體中文翻譯)", "cat1": "...", "cat2": "..."}}。類別從 [{req.categories}] 挑選或自擬。',
+        "ja": f'分析日文單字 "{req.word}"。請以繁體中文回答。提供 JSON格式: {{"phonetic": "假名讀音", "pos": "詞性(如 名詞, 動詞, い形容詞)", "definition": "精確的繁體中文釋義", "example": "日文例句 (附上繁體中文翻譯)", "cat1": "...", "cat2": "..."}}。類別從 [{req.categories}] 挑選或自擬。',
+    }
+    prompt = prompts.get(lang, prompts["en"])
     
     try:
         response = model.generate_content(
