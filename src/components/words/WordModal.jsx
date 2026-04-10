@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Brain, RefreshCw, Save } from 'lucide-react';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { useApi } from '../../hooks/useApi';
@@ -16,9 +16,18 @@ const WordModal = ({ isOpen, onClose, onSave, editingWord, categories }) => {
 
   const isEditing = !!editingWord;
 
-  const [formData, setFormData] = useState(() => {
+  const defaultForm = {
+    word: '', phonetic: '', pos: 'n.', definition: '', example: '',
+    category1Id: '', category2Id: '', difficulty: 1, notes: '',
+    createdAt: null, lastTestTime: null, lastTestResult: null,
+  };
+
+  const [formData, setFormData] = useState(defaultForm);
+
+  useEffect(() => {
+    if (!isOpen) return;
     if (editingWord) {
-      return {
+      setFormData({
         word: editingWord.word || '',
         phonetic: editingWord.phonetic || '',
         pos: editingWord.pos || 'n.',
@@ -31,14 +40,11 @@ const WordModal = ({ isOpen, onClose, onSave, editingWord, categories }) => {
         createdAt: editingWord.createdAt,
         lastTestTime: editingWord.lastTestTime,
         lastTestResult: editingWord.lastTestResult,
-      };
+      });
+    } else {
+      setFormData(defaultForm);
     }
-    return {
-      word: '', phonetic: '', pos: 'n.', definition: '', example: '',
-      category1Id: '', category2Id: '', difficulty: 1, notes: '',
-      createdAt: null, lastTestTime: null, lastTestResult: null,
-    };
-  });
+  }, [isOpen, editingWord]);
 
   const generateAIContent = async () => {
     if (!formData.word) return;
