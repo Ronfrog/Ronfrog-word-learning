@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**智能單字庫 (Smart Vocabulary Builder)** — A full-stack multi-language vocabulary learning app with AI-powered word analysis, Google OAuth2 authentication, and Firestore storage. Currently supports **English** and **Japanese**.
+**智慧單字庫 (Smart Vocabulary Builder)** — A full-stack multi-language vocabulary learning app with AI-powered word analysis, Google OAuth2 authentication, and Firestore storage. Currently supports **English** and **Japanese**.
 
 ## Commands
 

@@ -13,7 +13,7 @@ const Navbar = ({ view, changeView, openWordModal }) => {
       <div className="max-w-5xl mx-auto flex justify-between items-center">
         <div className="flex items-center gap-2 cursor-pointer" onClick={() => changeView('list')}>
           <div className="bg-indigo-600 p-2 rounded-xl text-white"><BookOpen size={20} /></div>
-          <h1 className="font-bold text-lg hidden sm:block">智能單字庫</h1>
+          <h1 className="font-bold text-lg hidden sm:block">智慧單字庫</h1>
         </div>
         <div className="flex gap-2 items-center">
           {/* 語言切換器 */}

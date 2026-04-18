@@ -34,7 +34,7 @@ const LoginScreen = () => {
             <BookOpen size={32} />
           </div>
           <div>
-            <h1 className="text-3xl font-black text-slate-800 mb-2">智能單字庫</h1>
+            <h1 className="text-3xl font-black text-slate-800 mb-2">智慧單字庫</h1>
             <p className="text-slate-500">專屬你的 AI 擴充詞彙助理</p>
           </div>
           <div className="flex justify-center mt-6 w-full">
