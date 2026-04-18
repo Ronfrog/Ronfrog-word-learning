@@ -1,5 +1,5 @@
-# 智能單字庫 (Smart Vocabulary Builder)
-**版本：v1.0.0**
+# 智慧單字庫 (Smart Vocabulary Builder)
+**版本：v0.1.0**
 
 這是一個結合 Google Gemini AI 功能與 Firebase 雲端資料庫的現代化 Web 應用程式。幫助使用者更有系統地擴充、測驗與管理個人專屬的**多語言**字彙庫。
 
@@ -49,7 +49,7 @@ npm run dev
 
 # 後端 (Terminal 2)
 cd backend
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8000 
 ```
 啟動後可以在瀏覽器開啟 `http://localhost:5173` 來預覽你的應用程式。
 
