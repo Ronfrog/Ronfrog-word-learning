@@ -46,10 +46,12 @@ const WordList = ({ words, categories, onOpenWord, onBatchDelete }) => {
   }, [words]);
 
   const filteredWords = useMemo(() => {
+    const term = searchTerm.toLowerCase();
     let result = words.filter(
       (w) =>
-        w.word.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        w.definition.includes(searchTerm)
+        w.word.toLowerCase().includes(term) ||
+        w.definition.includes(searchTerm) ||
+        (w.phonetic && w.phonetic.toLowerCase().includes(term))
     );
 
     if (filterConfig.category !== 'all') {
