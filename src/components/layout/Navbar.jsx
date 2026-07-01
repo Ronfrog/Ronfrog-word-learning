@@ -37,15 +37,15 @@ const Navbar = ({ view, changeView, openWordModal }) => {
           </button>
           <button
             onClick={() => changeView('quiz-setup')}
-            className="flex items-center gap-2 bg-indigo-50 text-indigo-700 px-4 py-2 rounded-xl font-medium"
+            className="flex items-center gap-1 sm:gap-2 bg-indigo-50 text-indigo-700 px-2 sm:px-4 py-2 rounded-xl font-medium"
           >
-            <PlayCircle size={20} /> 測驗
+            <PlayCircle size={20} /> <span className="hidden sm:inline">測驗</span>
           </button>
           <button
             onClick={() => openWordModal()}
-            className="bg-indigo-600 text-white px-4 py-2 rounded-xl font-medium shadow-md flex items-center gap-1"
+            className="bg-indigo-600 text-white px-2 sm:px-4 py-2 rounded-xl font-medium shadow-md flex items-center gap-1"
           >
-            <Plus size={20} /> 新增
+            <Plus size={20} /> <span className="hidden sm:inline">新增</span>
           </button>
 
           <div className="h-6 w-px bg-slate-200 mx-2"></div>
